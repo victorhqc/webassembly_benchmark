@@ -1,4 +1,5 @@
 use log::*;
+use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
 use strum::IntoEnumIterator;
 use strum_macros::{EnumIter, ToString};
@@ -17,18 +18,20 @@ pub struct App {
 #[derive(Serialize, Deserialize)]
 pub struct State {
     entries: Vec<Entry>,
+    entries_bkp: Vec<Entry>,
     filter: Filter,
     value: String,
     edit_value: String,
+    search_value: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 struct Entry {
     description: String,
     status: EntryStatus,
 }
 
-#[derive(PartialEq, Serialize, Deserialize, ToString)]
+#[derive(PartialEq, Serialize, Deserialize, ToString, Clone)]
 pub enum EntryStatus {
     New,
     Completed,
@@ -46,6 +49,8 @@ pub enum Msg {
     ToggleEdit(usize),
     Toggle(usize),
     ClearCompleted,
+    UpdateSearch(String),
+    Search,
     Nope,
 }
 
@@ -65,9 +70,11 @@ impl Component for App {
 
         let state = State {
             entries,
+            entries_bkp: Vec::new(),
             filter: Filter::All,
             value: String::from(""),
             edit_value: String::from(""),
+            search_value: String::from(""),
         };
 
         Self {
@@ -121,6 +128,14 @@ impl Component for App {
             Msg::ClearCompleted => {
                 self.state.clear_completed();
             }
+            Msg::UpdateSearch(val) => {
+                println!("Search Input: {}", val);
+                self.state.search_value = val;
+            }
+            Msg::Search => {
+                let search_value = self.state.search_value.clone();
+                self.state.search_todos(search_value);
+            }
             Msg::Nope => {}
         }
 
@@ -130,6 +145,14 @@ impl Component for App {
 
     fn view(&self) -> Html {
         info!("Rendered!");
+
+        let mut footer_class = String::from("footer");
+        match self.state.filter {
+            Filter::Search(_) => {
+                footer_class.push_str(" big_footer");
+            }
+            _ => {}
+        };
 
         html! {
             <div class="todomvc-wrapper">
@@ -153,17 +176,24 @@ impl Component for App {
                             }
                         </ul>
                     </section>
-                    <footer class="footer">
-                        <span class="todo-count">
-                            <b>{ self.state.total() }</b>
-                            {" item(s) left "}
-                        </span>
-                        <ul class="filters">
-                            { for Filter::iter().map(|filt| self.view_filter(filt)) }
-                        </ul>
-                        <button class="clear-completed" onclick=self.link.callback(|_| Msg::ClearCompleted)>
-                            { format!("Clear completed {}", self.state.total_completed()) }
-                        </button>
+                    <footer class=footer_class>
+                        <div class="row">
+                            <span class="todo-count">
+                                <b>{ self.state.total() }</b>
+                                {" item(s) left "}
+                            </span>
+                            <ul class="filters">
+                                { for Filter::iter().map(|filt| self.view_filter(filt)) }
+                            </ul>
+                            <button
+                                class="clear-completed"
+                                onclick=self.link.callback(|_| Msg::ClearCompleted)>
+                                { format!("Clear completed {}", self.state.total_completed()) }
+                            </button>
+                        </div>
+                        <div class="row">
+                            { self.view_search_input() }
+                        </div>
                     </footer>
                 </section>
                 <footer class="info">
@@ -174,6 +204,14 @@ impl Component for App {
                             href="https://github.com/DenisKolodin/"
                             target="_blank">
                             { "Denis Kolodin" }
+                        </a>
+                    </p>
+                    <p>
+                        { "Modified by " }
+                        <a
+                            href="https://github.com/victorhqc"
+                            target="_blank">
+                            { "Victor Quiroz" }
                         </a>
                     </p>
                     <p>
@@ -269,33 +307,67 @@ impl App {
             html! { <input type="hidden" /> }
         }
     }
+
+    fn view_search_input(&self) -> Html {
+        match self.state.filter {
+            Filter::Search(_) => {
+                html! {
+                    <input
+                        class="search"
+                        type="text"
+                        placeholder="Search..."
+                        value=&self.state.search_value
+                        oninput=self.link.callback(move |e:InputData| Msg::UpdateSearch(e.value))
+                        onblur=self.link.callback(|_| Msg::Search)
+                        onkeypress=self.link.callback(|e: KeyboardEvent| {
+                            if e.key() == "Enter" { Msg::Search } else { Msg::Nope }
+                        })
+                    />
+                }
+            }
+            _ => {
+                html! {}
+            }
+        }
+    }
 }
 
 #[derive(EnumIter, ToString, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Filter {
     All,
+    Search(String),
     Active,
     Completed,
 }
 
 impl<'a> Into<Href> for &'a Filter {
     fn into(self) -> Href {
-        match *self {
+        match &*self {
             Filter::All => "#/".into(),
             Filter::Active => "#/active".into(),
             Filter::Completed => "#/completed".into(),
+            Filter::Search(_) => "#/search/{}".into(),
         }
     }
 }
 
 impl Filter {
     fn fit(&self, entry: &Entry) -> bool {
-        match *self {
+        match &*self {
             Filter::All => true,
             Filter::Active => {
                 entry.status == EntryStatus::New || entry.status == EntryStatus::Editing
             }
             Filter::Completed => entry.status == EntryStatus::Completed,
+            Filter::Search(val) => {
+                let needle = Regex::new(&format!("(?i){}", val)).unwrap();
+                let found = needle.find(&entry.description);
+
+                match found {
+                    Some(_) => true,
+                    None => false,
+                }
+            }
         }
     }
 }
@@ -412,5 +484,28 @@ impl State {
         };
 
         self.entries.remove(idx);
+    }
+
+    fn search_todos(&mut self, val: String) {
+        let needle = String::from(val.trim());
+
+        if needle == "" && self.entries_bkp.len() > 0 {
+            self.entries = self.entries_bkp.clone();
+            self.entries_bkp = Vec::new();
+            return;
+        } else if needle == "" && self.entries_bkp.len() == 0 {
+            // Nothing to do here.
+            return;
+        }
+
+        self.entries_bkp = self.entries.clone();
+
+        let entries = self
+            .entries
+            .drain(..)
+            .filter(move |e| Filter::Search(needle.clone()).fit(e))
+            .collect();
+
+        self.entries = entries;
     }
 }

@@ -1,0 +1,20 @@
+.small_footer {
+  height: 20px;
+}
+
+.big_footer {
+  height: 55px;
+}
+
+.footer .row {
+  height: 20px;
+  position: relative;
+}
+
+.footer .search {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform: translate3d(0, 10px, 0);
+  font-size: 16px;
+}
