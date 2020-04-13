@@ -1,6 +1,8 @@
 #![recursion_limit = "512"]
 
 mod app;
+mod entries;
+mod random_words;
 mod utils;
 
 use wasm_bindgen::prelude::*;

@@ -1,3 +1,5 @@
+use crate::entries::Entries;
+use crate::random_words::random_animal;
 use log::*;
 use regex::Regex;
 use serde_derive::{Deserialize, Serialize};
@@ -25,10 +27,10 @@ pub struct State {
     search_value: String,
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-struct Entry {
-    description: String,
-    status: EntryStatus,
+#[derive(Serialize, Deserialize, Clone, PartialEq)]
+pub struct Entry {
+    pub description: String,
+    pub status: EntryStatus,
 }
 
 #[derive(PartialEq, Serialize, Deserialize, ToString, Clone)]
@@ -40,14 +42,9 @@ pub enum EntryStatus {
 
 pub enum Msg {
     Add,
-    Edit(usize),
     Update(String),
-    UpdateEdit(String),
-    Remove(usize),
     SetFilter(Filter),
     ToggleAll,
-    ToggleEdit(usize),
-    Toggle(usize),
     ClearCompleted,
     UpdateSearch(String),
     Search,
@@ -64,7 +61,8 @@ impl Component for App {
             if let Json(Ok(restored_entries)) = storage.restore(KEY) {
                 restored_entries
             } else {
-                Vec::new()
+                App::generate_random_todos(10_000)
+                // Vec::new()
             }
         };
 
@@ -95,35 +93,16 @@ impl Component for App {
                 self.state.entries.push(entry);
                 self.state.value = String::from("");
             }
-            Msg::Edit(idx) => {
-                let edit_value = self.state.edit_value.clone();
-                self.state.complete_edit(idx, edit_value);
-                self.state.edit_value = String::from("");
-            }
             Msg::Update(val) => {
                 println!("Input: {}", val);
                 self.state.value = val;
             }
-            Msg::UpdateEdit(val) => {
-                println!("Edit Input: {}", val);
-                self.state.edit_value = val;
-            }
-            Msg::Remove(idx) => {
-                self.state.remove(idx);
-            }
             Msg::SetFilter(filter) => {
                 self.state.filter = filter;
-            }
-            Msg::ToggleEdit(idx) => {
-                self.state.edit_value = self.state.entries[idx].description.clone();
-                self.state.toggle_edit(idx);
             }
             Msg::ToggleAll => {
                 let status = !self.state.is_all_completed();
                 self.state.toggle_all(status);
-            }
-            Msg::Toggle(idx) => {
-                self.state.toggle(idx);
             }
             Msg::ClearCompleted => {
                 self.state.clear_completed();
@@ -168,13 +147,7 @@ impl Component for App {
                             checked=self.state.is_all_completed()
                             onclick=self.link.callback(|_| Msg::ToggleAll )
                         />
-                        <ul class="todo-list">
-                            {
-                                for self.state.entries.iter().filter(|e| self.state.filter.fit(e))
-                                .enumerate()
-                                .map(|val| self.view_entry(val))
-                            }
-                        </ul>
+                        <Entries entries=self.state.entries.clone() />
                     </section>
                     <footer class=footer_class>
                         <div class="row">
@@ -225,6 +198,19 @@ impl Component for App {
 }
 
 impl App {
+    fn generate_random_todos(amount: u32) -> Vec<Entry> {
+        let mut entries = Vec::new();
+        for _ in 0..amount {
+            let entry = Entry {
+                description: random_animal(),
+                status: EntryStatus::New,
+            };
+            entries.push(entry);
+        }
+
+        entries
+    }
+
     fn view_filter(&self, filter: Filter) -> Html {
         let flt = filter.clone();
 
@@ -251,60 +237,6 @@ impl App {
                     if e.key() == "Enter" { Msg::Add } else { Msg::Nope }
                 })
             />
-        }
-    }
-
-    fn view_entry(&self, (idx, entry): (usize, &Entry)) -> Html {
-        let mut class = String::from("todo");
-        match entry.status {
-            EntryStatus::Editing => {
-                class.push_str(" editing");
-            }
-            EntryStatus::Completed => {
-                class.push_str(" completed");
-            }
-            _ => {}
-        };
-
-        html! {
-            <li class=class>
-                <div class="view">
-                    <input
-                        class="toggle"
-                        type="checkbox"
-                        checked=entry.status == EntryStatus::Completed
-                        onclick=self.link.callback(move |_| Msg::Toggle(idx))
-                    />
-                    <label ondoubleclick=self.link.callback(move |_| Msg::ToggleEdit(idx))>
-                        {&entry.description}
-                    </label>
-                    <button
-                        class="destroy"
-                        onclick=self.link.callback(move |_| Msg::Remove(idx))
-                    />
-                </div>
-                { self.view_entry_edit_input((&idx, &entry)) }
-            </li>
-        }
-    }
-
-    fn view_entry_edit_input(&self, (idx, entry): (&usize, &Entry)) -> Html {
-        let idx = *idx;
-        if entry.status == EntryStatus::Editing {
-            html! {
-                <input
-                    class="edit"
-                    type="text"
-                    value=&entry.description
-                    oninput=self.link.callback(move |e: InputData| Msg::UpdateEdit(e.value))
-                    onblur=self.link.callback(move |_| Msg::Edit(idx))
-                    onkeypress=self.link.callback(move |e: KeyboardEvent| {
-                        if e.key() == "Enter" { Msg::Edit(idx) } else { Msg::Nope }
-                    })
-                />
-            }
-        } else {
-            html! { <input type="hidden" /> }
         }
     }
 
@@ -346,7 +278,7 @@ impl<'a> Into<Href> for &'a Filter {
             Filter::All => "#/".into(),
             Filter::Active => "#/active".into(),
             Filter::Completed => "#/completed".into(),
-            Filter::Search(_) => "#/search/{}".into(),
+            Filter::Search(_) => "#/search".into(),
         }
     }
 }
@@ -416,74 +348,6 @@ impl State {
             .filter(|e| Filter::Active.fit(e))
             .collect();
         self.entries = entries;
-    }
-
-    fn toggle(&mut self, idx: usize) {
-        let filter = self.filter.clone();
-        let mut entries = self
-            .entries
-            .iter_mut()
-            .filter(|e| filter.fit(e))
-            .collect::<Vec<_>>();
-        let entry = entries.get_mut(idx).unwrap();
-
-        match entry.status {
-            EntryStatus::Completed => {
-                entry.status = EntryStatus::New;
-            }
-            EntryStatus::New => {
-                entry.status = EntryStatus::Completed;
-            }
-            EntryStatus::Editing => {}
-        };
-    }
-
-    fn toggle_edit(&mut self, idx: usize) {
-        let filter = self.filter.clone();
-        let mut entries = self
-            .entries
-            .iter_mut()
-            .filter(|e| filter.fit(e))
-            .collect::<Vec<_>>();
-        let entry = entries.get_mut(idx).unwrap();
-
-        match entry.status {
-            EntryStatus::Completed => {}
-            EntryStatus::New => {
-                entry.status = EntryStatus::Editing;
-            }
-            EntryStatus::Editing => {
-                entry.status = EntryStatus::New;
-            }
-        };
-    }
-
-    fn complete_edit(&mut self, idx: usize, val: String) {
-        let filter = self.filter.clone();
-        let mut entries = self
-            .entries
-            .iter_mut()
-            .filter(|e| filter.fit(e))
-            .collect::<Vec<_>>();
-        let entry = entries.get_mut(idx).unwrap();
-        entry.description = val;
-        entry.status = EntryStatus::New;
-    }
-
-    fn remove(&mut self, idx: usize) {
-        let idx = {
-            let filter = self.filter.clone();
-            let entries = self
-                .entries
-                .iter()
-                .enumerate()
-                .filter(|&(_, e)| filter.fit(e))
-                .collect::<Vec<_>>();
-            let &(idx, _) = entries.get(idx).unwrap();
-            idx
-        };
-
-        self.entries.remove(idx);
     }
 
     fn search_todos(&mut self, val: String) {
